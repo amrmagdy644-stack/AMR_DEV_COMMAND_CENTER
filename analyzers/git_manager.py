@@ -7,20 +7,41 @@ from pathlib import Path
 # GIT COMMAND RUNNER
 # ==========================================
 
-def run_git(project_path, command):
+def get_git_repo(project_path):
     root = Path(project_path).expanduser().resolve()
     git = shutil.which("git")
 
     if not root.is_dir():
         print("ERROR: Invalid project directory.")
-        return
+        return None, None
 
     if not git:
         print("ERROR: Git is not installed.")
-        return
+        return None, None
 
     if not (root / ".git").exists():
         print("ERROR: This folder is not a Git repository.")
+        return None, None
+
+    return root, git
+
+
+def execute_git(root, git, args, timeout=30):
+    return subprocess.run(
+        [git] + args,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout
+    )
+
+
+def run_git(project_path, command):
+    root, git = get_git_repo(project_path)
+
+    if not git:
         return
 
     commands = {
@@ -35,15 +56,7 @@ def run_git(project_path, command):
         return
 
     try:
-        result = subprocess.run(
-            [git] + commands[command],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30
-        )
+        result = execute_git(root, git, commands[command])
 
         print("\n" + "=" * 45)
         print("GIT MANAGER:", command.upper())
@@ -65,23 +78,14 @@ def run_git(project_path, command):
 # ==========================================
 
 def connect_main(project_path):
-    root = Path(project_path).expanduser().resolve()
-    git = shutil.which("git")
+    root, git = get_git_repo(project_path)
 
-    if not root.is_dir() or not git:
-        print("Invalid directory or Git is not installed.")
-        return
-
-    if not (root / ".git").exists():
-        print("This folder is not a Git repository.")
+    if not git:
         return
 
     try:
-        check = subprocess.run(
-            [git, "branch", "--list", "main"],
-            cwd=root,
-            capture_output=True,
-            text=True
+        check = execute_git(
+            root, git, ["branch", "--list", "main"]
         )
 
         if check.returncode != 0:
@@ -89,24 +93,11 @@ def connect_main(project_path):
             return
 
         if not check.stdout.strip():
-            create = subprocess.run(
-                [git, "branch", "main"],
-                cwd=root,
-                capture_output=True,
-                text=True
-            )
+            print("Main branch does not exist.")
+            return
 
-            if create.returncode != 0:
-                print(create.stderr)
-                return
-
-        result = subprocess.run(
-            [git, "switch", "main"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
+        result = execute_git(
+            root, git, ["switch", "main"]
         )
 
         print(result.stdout or result.stderr or "Connected to main.")
@@ -120,23 +111,13 @@ def connect_main(project_path):
 # ==========================================
 
 def git_add(project_path):
-    root = Path(project_path).expanduser().resolve()
-    git = shutil.which("git")
+    root, git = get_git_repo(project_path)
 
-    if not root.is_dir() or not git or not (root / ".git").exists():
-        print("ERROR: Invalid Git repository.")
+    if not git:
         return
 
     try:
-        result = subprocess.run(
-            [git, "add", "-A"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30
-        )
+        result = execute_git(root, git, ["add", "-A"])
 
         if result.returncode == 0:
             print("All changes added successfully.")
@@ -152,28 +133,32 @@ def git_add(project_path):
 # ==========================================
 
 def git_commit(project_path):
-    root = Path(project_path).expanduser().resolve()
-    git = shutil.which("git")
+    root, git = get_git_repo(project_path)
 
-    if not root.is_dir() or not git or not (root / ".git").exists():
-        print("ERROR: Invalid Git repository.")
-        return
-
-    message = input("Enter commit message: ").strip()
-
-    if not message:
-        print("Commit message cannot be empty.")
+    if not git:
         return
 
     try:
-        result = subprocess.run(
-            [git, "commit", "-m", message],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30
+        check = execute_git(
+            root, git, ["diff", "--cached", "--quiet"]
+        )
+
+        if check.returncode == 0:
+            print("Nothing to commit. Working tree clean.")
+            return
+
+        if check.returncode != 1:
+            print("Could not check staged changes.")
+            return
+
+        message = input("Enter commit message: ").strip()
+
+        if not message:
+            print("Commit message cannot be empty.")
+            return
+
+        result = execute_git(
+            root, git, ["commit", "-m", message]
         )
 
         print(result.stdout or result.stderr)
@@ -190,11 +175,9 @@ def git_commit(project_path):
 # ==========================================
 
 def git_push(project_path):
-    root = Path(project_path).expanduser().resolve()
-    git = shutil.which("git")
+    root, git = get_git_repo(project_path)
 
-    if not root.is_dir() or not git or not (root / ".git").exists():
-        print("ERROR: Invalid Git repository.")
+    if not git:
         return
 
     confirm = input(
@@ -206,23 +189,119 @@ def git_push(project_path):
         return
 
     try:
-        result = subprocess.run(
-            [git, "push"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60
+        result = execute_git(
+            root, git, ["push"], timeout=60
         )
 
         print(result.stdout or result.stderr)
 
         if result.returncode != 0:
-            print("Push failed. Check your remote and authentication.")
+            print("Push failed. Check remote and authentication.")
+        else:
+            print("Push completed successfully.")
 
     except subprocess.TimeoutExpired:
         print("ERROR: Git push timed out.")
+
+    except Exception as error:
+        print("ERROR:", error)
+
+
+# ==========================================
+# SYNC ALL
+# ==========================================
+
+def sync_all(project_path):
+    root, git = get_git_repo(project_path)
+
+    if not git:
+        return
+
+    print("\n" + "=" * 45)
+    print("          GIT SYNC ALL")
+    print("=" * 45)
+
+    try:
+        # STEP 1: Check remote
+        remote = execute_git(
+            root, git, ["remote", "get-url", "origin"]
+        )
+
+        if remote.returncode != 0:
+            print("ERROR: No origin remote configured.")
+            return
+
+        print("\n[1/5] Remote connection found.")
+
+        # STEP 2: Add changes
+        add = execute_git(root, git, ["add", "-A"])
+
+        if add.returncode != 0:
+            print("Git Add failed:", add.stderr)
+            return
+
+        print("[2/5] Files added successfully.")
+
+        # STEP 3: Check staged changes
+        check = execute_git(
+            root, git, ["diff", "--cached", "--quiet"]
+        )
+
+        if check.returncode == 1:
+            message = input(
+                "\nEnter commit message: "
+            ).strip()
+
+            if not message:
+                print("Commit cancelled: Empty message.")
+                return
+
+            commit = execute_git(
+                root, git, ["commit", "-m", message]
+            )
+
+            print(commit.stdout or commit.stderr)
+
+            if commit.returncode != 0:
+                print("Commit failed. Sync stopped.")
+                return
+
+            print("[3/5] Commit completed.")
+
+        elif check.returncode == 0:
+            print("[3/5] No new changes to commit.")
+
+        else:
+            print("Could not check staged changes.")
+            return
+
+        # STEP 4: Confirm push
+        confirm = input(
+            "\nPush changes to GitHub? (y/n): "
+        ).strip().lower()
+
+        if confirm != "y":
+            print("Push cancelled. Local changes are saved.")
+            return
+
+        # STEP 5: Push
+        push = execute_git(
+            root, git, ["push"], timeout=60
+        )
+
+        print("\n" + "=" * 45)
+        print("GITHUB PUSH RESULT")
+        print("=" * 45)
+
+        print(push.stdout or push.stderr)
+
+        if push.returncode == 0:
+            print("\nSYNC COMPLETED SUCCESSFULLY!")
+        else:
+            print("\nPUSH FAILED. Check GitHub connection.")
+
+    except subprocess.TimeoutExpired:
+        print("ERROR: Git operation timed out.")
 
     except Exception as error:
         print("ERROR:", error)
@@ -248,6 +327,7 @@ def git_menu():
         print("6. Git Add")
         print("7. Git Commit")
         print("8. Git Push")
+        print("9. Sync All")
         print("0. Back")
 
         choice = input("\nSelect Option: ").strip()
@@ -255,7 +335,10 @@ def git_menu():
         if choice == "0":
             return
 
-        if choice not in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        if choice not in [
+            "1", "2", "3", "4", "5",
+            "6", "7", "8", "9"
+        ]:
             print("Invalid option.")
             input("\nPress Enter to continue...")
             continue
@@ -285,6 +368,9 @@ def git_menu():
 
         elif choice == "8":
             git_push(path)
+
+        elif choice == "9":
+            sync_all(path)
 
         input("\nPress Enter to continue...")
 
